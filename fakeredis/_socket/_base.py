@@ -11,7 +11,7 @@ from typing import Any, AnyStr, Callable, ClassVar
 import redis
 
 from fakeredis import _msgs as msgs
-from fakeredis._commands import SUPPORTED_COMMANDS, Signature
+from fakeredis._commands import SUPPORTED_COMMANDS, Key, Signature
 from fakeredis._core import CommandItem, FakeServer
 from fakeredis._helpers import QUEUED, NoResponse, SimpleError, SimpleString
 from fakeredis._socket._dragonfly import (
@@ -29,6 +29,14 @@ _file_no_counter = itertools.count(8)
 
 def _get_next_file_no() -> int:
     return next(_file_no_counter)
+
+
+def _key_arguments(sig: Signature, args: list[Any]) -> set[bytes]:
+    """The entries of ``args`` that ``sig`` declares as keys (mirrors the type layout in ``Signature.apply``)."""
+    types = list(sig.fixed)
+    if sig.repeat:
+        types.extend(sig.repeat[i % len(sig.repeat)] for i in range(len(args) - len(types)))
+    return {arg for arg, type_ in zip(args, types) if isinstance(type_, Key)}
 
 
 class BaseFakeSocket(NotificationsMixin):
@@ -266,6 +274,12 @@ class BaseFakeSocket(NotificationsMixin):
                     result = QUEUED
                 else:
                     from_run_command = True
+                    # Test-only interleave seam: validation (ACL, arity, queueing) is done and nothing has touched
+                    # the database yet. A parked command waits here without holding the server lock; queued
+                    # MULTI/EXEC commands and script-issued commands never reach this point, so they stay atomic.
+                    barrier = self._server.command_barrier
+                    if barrier.matches(sig.name):
+                        barrier.park_if_armed(sig.name, _key_arguments(sig, cmd_arguments))
                     result = self._run_command(func, sig, cmd_arguments, False)
         except SimpleError as exc:
             if self._queueing and not from_run_command:
