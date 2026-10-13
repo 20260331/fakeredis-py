@@ -8,6 +8,13 @@ from collections import OrderedDict, defaultdict
 from typing import Any, ClassVar
 
 from fakeredis._core._database import Database
+from fakeredis._core._faults import (
+    AFTER_EXECUTION,
+    BEFORE_EXECUTION,
+    DEFAULT_ERROR_MESSAGE,
+    FaultPlan,
+    FaultPlanBook,
+)
 from fakeredis._typing import ServerType, VersionType
 from fakeredis.model import AccessControlList
 
@@ -70,8 +77,64 @@ class FakeServer:
         # Where each recent SCAN-family cursor resumes: (the iteration's sorted snapshot, the position in it), keyed by
         # (scan state, cursor). See `_scan`.
         self.scan_cursors: OrderedDict[tuple[Any, int], tuple[list[Any], int]] = OrderedDict()
+        # Single-shot command faults tests arm to exercise client retry logic: error reply before execution, or a
+        # dropped reply plus closed connection after execution.
+        self.fault_plans: FaultPlanBook = FaultPlanBook()
 
     SCAN_CURSORS_LIMIT: ClassVar[int] = 1024
+
+    def fault_before_execution(
+        self,
+        command: str | bytes,
+        *,
+        db: int | None = None,
+        client_id: int | None = None,
+        client_name: str | bytes | None = None,
+        error: str | bytes = DEFAULT_ERROR_MESSAGE,
+    ) -> FaultPlan:
+        """Arm a one-shot fault answering ``command`` with an error reply before it executes.
+
+        The command (and any of its writes) never runs, so a client can safely retry it. ``db``, ``client_id`` and
+        ``client_name`` restrict which client/database the fault applies to; unset fields match anything.
+        """
+        return self.fault_plans.arm(
+            FaultPlan(
+                command=command,
+                db=db,
+                client_id=client_id,
+                client_name=client_name,
+                phase=BEFORE_EXECUTION,
+                error=error,
+            )
+        )
+
+    def fault_after_execution(
+        self,
+        command: str | bytes,
+        *,
+        db: int | None = None,
+        client_id: int | None = None,
+        client_name: str | bytes | None = None,
+    ) -> FaultPlan:
+        """Arm a one-shot fault that runs ``command`` and then discards its reply and closes the connection.
+
+        The command's writes are committed, but the client never receives the reply: it sees a connection error and
+        cannot know whether the write landed, so retrying may apply it twice. ``db``, ``client_id`` and
+        ``client_name`` restrict which client/database the fault applies to; unset fields match anything.
+        """
+        return self.fault_plans.arm(
+            FaultPlan(
+                command=command,
+                db=db,
+                client_id=client_id,
+                client_name=client_name,
+                phase=AFTER_EXECUTION,
+            )
+        )
+
+    def clear_faults(self) -> None:
+        """Remove all armed faults that have not fired yet."""
+        self.fault_plans.clear()
 
     def remember_scan_cursor(self, cursor_key: tuple[Any, int], resume_at: tuple[list[Any], int]) -> None:
         """Record where a SCAN-family cursor resumes, forgetting the oldest cursor once too many are held."""

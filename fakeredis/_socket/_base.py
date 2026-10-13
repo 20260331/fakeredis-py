@@ -13,6 +13,7 @@ import redis
 from fakeredis import _msgs as msgs
 from fakeredis._commands import SUPPORTED_COMMANDS, Signature
 from fakeredis._core import CommandItem, FakeServer
+from fakeredis._core._faults import AFTER_EXECUTION
 from fakeredis._helpers import QUEUED, NoResponse, SimpleError, SimpleString
 from fakeredis._socket._dragonfly import (
     DRAGONFLY_NO_SCRIPT_COMMANDS,
@@ -73,6 +74,10 @@ class BaseFakeSocket(NotificationsMixin):
         # Set by CLIENT KILL. The owning client only notices when it next writes, matching a real server closing the
         # connection underneath it.
         self._killed = False
+        # Set when an AFTER_EXECUTION fault fired for the command just parsed: it was executed, but its reply is
+        # discarded and the connection must be dropped. sendall() turns it into a ConnectionError on the way back to
+        # the client, so over TCP the handler closes the socket and in-process the command call raises.
+        self._pending_connection_drop = False
         # CLIENT REPLY state, mirroring redis' CLIENT_REPLY_OFF/SKIP/SKIP_NEXT flags.
         self._reply_off = False
         self._reply_skip = False
@@ -236,6 +241,7 @@ class BaseFakeSocket(NotificationsMixin):
         cmd, cmd_arguments = extract_command(fields)
         from_run_command = False
         unknown_command = False
+        drop_connection = False
         try:
             try:
                 func, sig = self._name_to_func(cmd)
@@ -265,6 +271,18 @@ class BaseFakeSocket(NotificationsMixin):
                     self._transaction.append((func, sig, cmd_arguments))
                     result = QUEUED
                 else:
+                    # Fault plans only match commands executed directly; a command queued in a MULTI is not executed
+                    # until EXEC and is deliberately not matched there.
+                    fault = self._server.fault_plans.consume(
+                        command=cmd,
+                        db=self._db_num,
+                        client_id=int(self._client_info.get("id", 0)),
+                        client_name=str(self._client_info.get("name", "")).encode("utf-8"),
+                    )
+                    if fault is not None and fault.phase == AFTER_EXECUTION:
+                        drop_connection = True
+                    elif fault is not None:
+                        raise SimpleError(fault.error_message)
                     from_run_command = True
                     result = self._run_command(func, sig, cmd_arguments, False)
         except SimpleError as exc:
@@ -280,6 +298,11 @@ class BaseFakeSocket(NotificationsMixin):
                 self._forget_transaction()
                 self._clear_watches()
             result = exc
+        if drop_connection:
+            # The command ran and its writes are committed, but the reply is discarded: take the connection down
+            # before the client can read anything (see sendall), reproducing an ambiguous write outcome.
+            self._pending_connection_drop = True
+            return
         result = self._decode_result(result)
         suppressed = self._reply_off or self._reply_skip
         # Mirror redis' resetClient(): the SKIP armed by CLIENT REPLY SKIP takes effect on the command *after* it, then
@@ -418,3 +441,9 @@ class BaseFakeSocket(NotificationsMixin):
         if isinstance(data, str):
             data = data.encode("ascii")  # type: ignore
         self._parser.send(data)
+        if self._pending_connection_drop:
+            # An AFTER_EXECUTION fault fired while parsing this data: the command is committed but its reply was
+            # discarded. Raise out of sendall so the in-process client sees a connection error and, on the TCP
+            # server, the request handler breaks its loop and closes the underlying socket.
+            self._pending_connection_drop = False
+            raise self._connection_error_class(msgs.CONNECTION_ERROR_MSG)

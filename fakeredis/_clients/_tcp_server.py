@@ -190,8 +190,11 @@ class TCPFakeRequestHandler(StreamRequestHandler):
                         break
                 self.current_client.get_socket().sendall(data)
 
-            except ConnectionError as e:
-                # The peer reset the connection; there is no socket left to report to.
+            except (ConnectionError, redis.ConnectionError) as e:
+                # The peer reset the connection, or the fake socket signalled a connection drop (CLIENT KILL, a
+                # disconnected server, or an injected after-execution fault). Close without writing anything: the
+                # client must see the TCP link vanish mid-protocol, not an error reply. redis-py's ConnectionError is
+                # unrelated to the builtin one (it derives from RedisError), so both have to be named.
                 LOGGER.debug(f"!!! {self.client_address[0]} reset: {e}")
                 break
             except Exception as e:

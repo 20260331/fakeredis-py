@@ -8,7 +8,7 @@ from ._clients import (
     FakeStrictRedis,
     TcpFakeServer,
 )
-from ._core import FakeServer
+from ._core import AFTER_EXECUTION, BEFORE_EXECUTION, FakeServer, FaultPlan, FaultPlanBook
 from .aioredis import FakeConnection as FakeAsyncConnection
 
 __version__ = _typing.lib_version
@@ -20,6 +20,8 @@ __url__ = "https://github.com/cunla/fakeredis-py"
 __bugtrack_url__ = "https://github.com/cunla/fakeredis-py/issues"
 
 __all__ = [
+    "AFTER_EXECUTION",
+    "BEFORE_EXECUTION",
     "FakeAsyncConnection",
     "FakeAsyncRedis",
     "FakeAsyncRedisConnection",
@@ -28,6 +30,8 @@ __all__ = [
     "FakeRedisConnection",
     "FakeServer",
     "FakeStrictRedis",
+    "FaultPlan",
+    "FaultPlanBook",
     "TcpFakeServer",
 ]
 
