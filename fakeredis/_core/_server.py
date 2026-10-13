@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import time
@@ -9,7 +10,7 @@ from typing import Any, ClassVar
 
 from fakeredis._core._database import Database
 from fakeredis._typing import ServerType, VersionType
-from fakeredis.model import AccessControlList
+from fakeredis.model import AccessControlList, Hash
 
 LOGGER = logging.getLogger("fakeredis")
 
@@ -91,6 +92,34 @@ class FakeServer:
             client_id = self._next_client_id
             self._next_client_id += 1
         return client_id
+
+    def fork(self) -> FakeServer:
+        """Create an independent server from an atomic snapshot of this one.
+
+        The copy starts with the same data (every key, its TTLs, stream and time-series state) and configuration
+        (server version/type, config options, ACL users and cached Lua scripts). It shares nothing mutable with the
+        origin, so writes on either side never reach the other.
+
+        Connection-bound state is deliberately not copied: the forked server has no sockets, pub/sub subscribers,
+        WATCHes, blocked clients or in-flight SCAN cursors. Its client ids start again from 1 and CLIENT PAUSE does
+        not carry over.
+        """
+        with self.lock:
+            new_server = FakeServer(version=self.version, server_type=self.server_type, config=dict(self.config))
+            new_server.lastsave = self.lastsave
+            new_server.script_cache = dict(self.script_cache)
+            # ACL users and rules are configuration; the denial log is per-connection history and starts empty.
+            new_server.acl = copy.deepcopy(self.acl)
+            new_server.acl.reset_log()
+            for db_num, old_db in self.dbs.items():
+                new_db = old_db.snapshot(new_server.lock)
+                for item in new_db._dict.values():
+                    # Pending hash-field expiry notifications belong to commands already served on the origin; with
+                    # no subscribers crossing the fork they must not be replayed here.
+                    if isinstance(item.value, Hash):
+                        item.value._expired_fields.clear()
+                new_server.dbs[db_num] = new_db
+        return new_server
 
     @staticmethod
     def get_server(key: str, version: VersionType, server_type: ServerType) -> FakeServer:

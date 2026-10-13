@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import heapq
 import itertools
 import random
@@ -27,6 +28,25 @@ class Database(MutableMapping):  # type: ignore
         self._dict, other._dict = other._dict, self._dict
         self._expiry_heap, other._expiry_heap = other._expiry_heap, self._expiry_heap
         self.time, other.time = other.time, self.time
+
+    def snapshot(self, lock: threading.Lock | None) -> Database:
+        """An independent copy of this database's data, taken with the server lock already held.
+
+        Every key and value is deep-copied in one pass so values that reference each other (a time-series compaction
+        rule points at its destination series, a stream group points back at its stream) keep the same links inside
+        the copy. Values holding a back-reference to their database (time series) are rewired onto the new database.
+        Connection-bound state never crosses: watches, blocking waits and change callbacks start empty.
+        """
+        new_db = Database(lock)
+        new_db.time = self.time
+        # Pre-seeding deepcopy's memo makes every value that points back at this database point at `new_db` instead.
+        new_db._dict = copy.deepcopy(self._dict, {id(self): new_db})
+        # Rebuild the expiry heap from the copied items rather than copying the heap itself, which drops the stale
+        # entries TTL refreshes leave behind.
+        heap = [(item.expireat, key) for key, item in new_db._dict.items() if item.expireat is not None]
+        heapq.heapify(heap)
+        new_db._expiry_heap = heap
+        return new_db
 
     def notify_watch(self, key: bytes) -> None:
         for sock in self._watches.get(key, set()):
