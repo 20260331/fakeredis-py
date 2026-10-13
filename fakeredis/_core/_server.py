@@ -70,6 +70,9 @@ class FakeServer:
         # Where each recent SCAN-family cursor resumes: (the iteration's sorted snapshot, the position in it), keyed by
         # (scan state, cursor). See `_scan`.
         self.scan_cursors: OrderedDict[tuple[Any, int], tuple[list[Any], int]] = OrderedDict()
+        # Active server-side command expectation scopes (fakeredis._expectations). Empty unless a test installed
+        # one; the command dispatch path iterates it on every well-formed command.
+        self.command_scopes: list[Any] = []
 
     SCAN_CURSORS_LIMIT: ClassVar[int] = 1024
 

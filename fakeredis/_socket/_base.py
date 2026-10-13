@@ -13,6 +13,7 @@ import redis
 from fakeredis import _msgs as msgs
 from fakeredis._commands import SUPPORTED_COMMANDS, Signature
 from fakeredis._core import CommandItem, FakeServer
+from fakeredis._expectations import begin_command, finish_command
 from fakeredis._helpers import QUEUED, NoResponse, SimpleError, SimpleString
 from fakeredis._socket._dragonfly import (
     DRAGONFLY_NO_SCRIPT_COMMANDS,
@@ -85,6 +86,10 @@ class BaseFakeSocket(NotificationsMixin):
         self._blocked = False
         self._unblock_reason: bytes | None = None
         self._subkey_events = []
+        # Records of an async blocking command waiting on its delayed reply. _expect_delayed_reply is armed only
+        # by AsyncFakeSocket._blocking to distinguish such commands from pub/sub or CLIENT REPLY (also reply-less).
+        self._pending_expectation_records: list[Any] = []
+        self._expect_delayed_reply = False
         self._parser = self._parse_commands()
         self._parser.send(None)
         # Assigned elsewhere
@@ -236,6 +241,7 @@ class BaseFakeSocket(NotificationsMixin):
         cmd, cmd_arguments = extract_command(fields)
         from_run_command = False
         unknown_command = False
+        expectation_records: list[Any] = []
         try:
             try:
                 func, sig = self._name_to_func(cmd)
@@ -262,9 +268,22 @@ class BaseFakeSocket(NotificationsMixin):
                 if self._queueing and self._transaction is not None and msgs.FLAG_TRANSACTION not in sig.flags:
                     if self.server_type == "dragonfly" and cmd in DRAGONFLY_NO_TRANSACTION_COMMANDS:
                         raise SimpleError(msgs.DRAGONFLY_NOT_IN_TRANSACTION_MSG.format(cmd.upper()))
-                    self._transaction.append((func, sig, cmd_arguments))
+                    # Offered to expectation scopes before queueing, so a mismatch fails to queue (and EXEC aborts)
+                    # exactly like an arity/unknown-command error.
+                    rejection, expectation_records = begin_command(
+                        self._server.command_scopes, cmd, tuple(cmd_arguments), self._db_num, True
+                    )
+                    if rejection is not None:
+                        raise rejection
+                    self._transaction.append((func, sig, cmd_arguments, expectation_records))
                     result = QUEUED
                 else:
+                    # Offered before the command runs, so a strict scope can reject it without side effects.
+                    rejection, expectation_records = begin_command(
+                        self._server.command_scopes, cmd, tuple(cmd_arguments), self._db_num, False
+                    )
+                    if rejection is not None:
+                        raise rejection
                     from_run_command = True
                     result = self._run_command(func, sig, cmd_arguments, False)
         except SimpleError as exc:
@@ -280,6 +299,19 @@ class BaseFakeSocket(NotificationsMixin):
                 self._forget_transaction()
                 self._clear_watches()
             result = exc
+        delayed = self._expect_delayed_reply
+        self._expect_delayed_reply = False
+        if expectation_records:
+            if delayed and isinstance(result, NoResponse):
+                # Async blocking command: resolve the records when the deferred reply is produced.
+                finish_command(expectation_records, None, delayed=True)
+                self._pending_expectation_records = expectation_records
+            else:
+                # Commands that never answer (pub/sub, CLIENT REPLY SKIP/OFF) record None rather than the marker.
+                finish_command(
+                    expectation_records,
+                    None if isinstance(result, NoResponse) else result,
+                )
         result = self._decode_result(result)
         suppressed = self._reply_off or self._reply_skip
         # Mirror redis' resetClient(): the SKIP armed by CLIENT REPLY SKIP takes effect on the command *after* it, then

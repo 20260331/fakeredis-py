@@ -9,6 +9,14 @@ from ._clients import (
     TcpFakeServer,
 )
 from ._core import FakeServer
+from ._expectations import (
+    ANY,
+    CommandExpectation,
+    CommandExpectations,
+    RecordedCommand,
+    expect_commands,
+    record_commands,
+)
 from .aioredis import FakeConnection as FakeAsyncConnection
 
 __version__ = _typing.lib_version
@@ -20,6 +28,9 @@ __url__ = "https://github.com/cunla/fakeredis-py"
 __bugtrack_url__ = "https://github.com/cunla/fakeredis-py/issues"
 
 __all__ = [
+    "ANY",
+    "CommandExpectation",
+    "CommandExpectations",
     "FakeAsyncConnection",
     "FakeAsyncRedis",
     "FakeAsyncRedisConnection",
@@ -28,7 +39,10 @@ __all__ = [
     "FakeRedisConnection",
     "FakeServer",
     "FakeStrictRedis",
+    "RecordedCommand",
     "TcpFakeServer",
+    "expect_commands",
+    "record_commands",
 ]
 
 try:

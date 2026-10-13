@@ -5,6 +5,7 @@ from typing import Any, Callable
 from fakeredis import _msgs as msgs
 from fakeredis._commands import Key, command
 from fakeredis._core import CommandItem
+from fakeredis._expectations import resolve_transaction_item
 from fakeredis._helpers import OK, SimpleError, SimpleString
 from fakeredis.commands_mixins._mixin_base import CommandsMixinBase
 
@@ -91,7 +92,7 @@ class TransactionsCommandsMixin(CommandsMixinBase):
         if watch_notified:
             return None
         result = []
-        for func, sig, args in transaction:
+        for func, sig, args, records in transaction:
             try:
                 self._in_transaction = True
                 ans = self._run_command(func, sig, args, False)
@@ -99,6 +100,8 @@ class TransactionsCommandsMixin(CommandsMixinBase):
                 ans = exc
             finally:
                 self._in_transaction = False
+            # Replace the QUEUED placeholder in command expectation records with the real reply.
+            resolve_transaction_item(records, ans)
             result.append(ans)
         return result
 

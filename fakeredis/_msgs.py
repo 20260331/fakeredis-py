@@ -229,6 +229,14 @@ NO_PERMISSION_ERROR = "NOPERM User {} has no permissions to run the '{}' command
 NO_PERMISSION_KEY_ERROR = "NOPERM No permissions to access a key"
 NO_PERMISSION_CHANNEL_ERROR = "NOPERM No permissions to access a channel"
 
+# Server-side command expectation scopes (fakeredis._expectations)
+EXPECTATION_VIOLATION_MSG = (
+    "ERR fakeredis command expectation violated: unexpected command {got} (db {db}); next expected {expected}"
+)
+EXPECTATION_EXHAUSTED_MSG = (
+    "ERR fakeredis command expectation violated: unexpected command {got} (db {db}); no further commands expected"
+)
+
 # Command flags
 FLAG_NO_SCRIPT = "s"  # Command not allowed in scripts
 FLAG_LEAVE_EMPTY_VAL = "v"

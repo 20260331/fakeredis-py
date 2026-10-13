@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import redis.asyncio as redis_async
 
+from fakeredis._expectations import resolve_blocking_reply
 from fakeredis._helpers import NoResponse, SimpleError
 from fakeredis._socket._fakesocket import FakeSocket
 from fakeredis._typing import async_timeout
@@ -77,6 +78,11 @@ class AsyncFakeSocket(FakeSocket):
                 self._db.remove_change_callback(callback)
                 self._blocked = False
                 self._unblock_reason = None
+            # Fill in the command expectation records that have been waiting on this delayed reply.
+            pending_records = self._pending_expectation_records
+            self._pending_expectation_records = []
+            if pending_records:
+                resolve_blocking_reply(pending_records, result)
             self.put_response(result)
             self.resume()
 
@@ -99,6 +105,9 @@ class AsyncFakeSocket(FakeSocket):
         self._db.add_change_callback(callback)
         self._blocked = True
         self.pause()
+        # Tell the dispatch path the reply to this command arrives from _async_blocking, so command expectation
+        # records know to wait for it.
+        self._expect_delayed_reply = True
         # `shape` travels with the task: the reply is put on the queue from there, past the point where the command that
         # blocked could still touch it.
         loop.create_task(self._async_blocking(timeout, func, event, callback, shape))
