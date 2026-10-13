@@ -84,6 +84,9 @@ class BaseFakeSocket(NotificationsMixin):
         # should be woken.
         self._blocked = False
         self._unblock_reason: bytes | None = None
+        # Name of the last command processed (upper case). While blocked this is the blocking command; reported by
+        # FakeServer.diagnostics.
+        self._last_command: str | None = None
         self._subkey_events = []
         self._parser = self._parse_commands()
         self._parser.send(None)
@@ -234,6 +237,7 @@ class BaseFakeSocket(NotificationsMixin):
             return
         result: Any
         cmd, cmd_arguments = extract_command(fields)
+        self._last_command = cmd.upper()
         from_run_command = False
         unknown_command = False
         try:

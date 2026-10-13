@@ -8,7 +8,7 @@ from ._clients import (
     FakeStrictRedis,
     TcpFakeServer,
 )
-from ._core import FakeServer
+from ._core import FakeServer, QuiescenceTimeoutError
 from .aioredis import FakeConnection as FakeAsyncConnection
 
 __version__ = _typing.lib_version
@@ -28,6 +28,7 @@ __all__ = [
     "FakeRedisConnection",
     "FakeServer",
     "FakeStrictRedis",
+    "QuiescenceTimeoutError",
     "TcpFakeServer",
 ]
 
